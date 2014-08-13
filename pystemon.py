@@ -107,17 +107,14 @@ class PastieSite(threading.Thread):
             sleep_time = random.randint(self.update_min, self.update_max)
             try:
                 # grabs site from queue
-                logger.info(
-                    'Downloading list of new pastes from {name}. '
-                    'Will check again in {time} seconds'.format(
-                        name=self.name, time=sleep_time))
-                # get the list of last pasties, but reverse it
-                # so we first have the old entries and then the new ones
-                last_pasties = self.get_last_pasties()
+                logger.info("[+] Checking for new pasties from {name}. Next download scheduled in {time} seconds".format(name=self.name, time=sleep_time))
+                # get the list of last pasties, but reverse it so we first have the old
+                # entries and then the new ones
+                last_pasties = self.getLastPasties()
                 if last_pasties:
                     for pastie in reversed(last_pasties):
                         queues[self.name].put(pastie)  # add pastie to queue
-                    logger.info("Found {amount} new pasties for site {site}. There are now {qsize} pasties to be downloaded.".format(amount=len(last_pasties),
+                    logger.info("[+] Found {amount} new pasties for site {site}. There are now {qsize} pasties to be downloaded.".format(amount=len(last_pasties),
                                                                                                           site=self.name,
                                                                                                           qsize=queues[self.name].qsize()))
             # catch unknown errors
@@ -152,7 +149,8 @@ class PastieSite(threading.Thread):
                     pastie = Pastie(self, pastie_id)
                 pasties.append(pastie)
             return pasties
-        logger.error("No last pasties matches for regular expression site:{site} regex:{regex}. Error in your regex? Dumping htmlPage \n {html}".format(site=self.name, regex=self.archive_regex, html=htmlPage.encode('utf8')))
+        logger.error("[E] No last pasties matches for regular expression site:{site} regex:{regex}. Error in your regex? Dumping htmlPage into file".format(site=self.name, regex=self.archive_regex))
+        # TODO: dump htmlPage.encode('utf8')
         return False
 
     def seen_pastie(self, pastie_id):
@@ -292,9 +290,8 @@ class Pastie():
             self.action_on_match()
 
     def action_on_match(self):
-        msg = 'Found hit for {matches} in pastie {url}'.format(
-            matches=self.matches_to_text(), url=self.url)
-        logger.info(msg)
+        alert = "[A] Found hit for {matches} in pastie {url}".format(matches=self.matchesToText(), url=self.url)
+        logger.info(alert)
         # store info in DB
         if db:
             db.queue.put(self)
@@ -328,7 +325,7 @@ class Pastie():
 
     def send_email_alert(self):
         msg = MIMEMultipart()
-        alert = "Found hit for {matches} in pastie {url}".format(matches=self.matches_to_text(), url=self.url)
+        alert = "Found {matches} in pastie {url}".format(matches=self.matchesToText(), url=self.url)
         # headers
         msg['Subject'] = yamlconfig['email']['subject'].format(subject=alert)
         msg['From'] = yamlconfig['email']['from']
@@ -351,7 +348,7 @@ Below (after newline) is the content of the pastie:
 
 {content}
 
-        '''.format(site=self.site.name, url=self.url, matches=self.matches_to_regex(), content=self.pastie_content)
+        '''.format(site=self.site.name, url=self.url, matches=self.matchesToRegex(), content=self.pastie_content.encode('utf8'))
         msg.attach(MIMEText(message))
         # send out the mail
         try:
@@ -488,6 +485,7 @@ def main():
         threads.append(t)
         t.setDaemon(True)
         t.start()
+        logger.info("[I] Proxy status: {count} proxies left in memory".format(count=len(proxies_list)))
 
     # start a thread to handle the DB data
     db = None
@@ -537,11 +535,16 @@ def main():
         t.setDaemon(True)
         t.start()
     
+    cnt = 0
     # wait while all the threads are running and someone sends CTRL+C
     while True:
         try:
             for t in threads:
+                if cnt >= 30:
+                    cnt = 0
+                    logger.info("[I] Proxy status: {count} proxies left in memory".format(count=len(proxies_list)))
                 t.join(1)
+                cnt = cnt + 1
         except KeyboardInterrupt:
             print ''
             print "Ctrl-c received! Sending kill to threads..."
@@ -597,13 +600,14 @@ class ThreadProxyList(threading.Thread):
            if mtime != self.last_mtime:
                 logger.debug('Proxy configuration file changed. Reloading proxy list.')
                 proxies_lock.acquire()
-                loadProxiesFromFile(self.filename)
+                load_proxies_from_file(self.filename)
                 self.last_mtime = mtime
                 proxies_lock.release()
 
 
 def load_proxies_from_file(filename):
     global proxies_list
+    proxies_list = [] 
     try:
         f = open(filename)
     except Exception, e:
@@ -611,7 +615,9 @@ def load_proxies_from_file(filename):
     for line in f:
         line = line.strip()
         if line:  # LATER verify if the proxy line has the correct structure
-            proxies_list.add(line)
+            proxies_lock.acquire()
+            proxies_list.append(line)
+            proxies_lock.release()
     logger.debug('Found {count} proxies in file "{file}"'.format(file=filename, count=len(proxies_list)))
 
 
@@ -621,21 +627,27 @@ def get_random_proxy():
     proxies_lock.acquire()
     if proxies_list:
         proxy = random.choice(tuple(proxies_list))
+        logger.debug("Using proxy {0} from proxy list.".format(proxy))
     proxies_lock.release()
     return proxy
 
 
 def failed_proxy(proxy):
+    maxcount = 3
     proxies_failed.append(proxy)
-    if proxies_failed.count(proxy) >= 2 and proxy in proxies_list:
-        logger.info("Removing proxy {0} from proxy list because of to many errors errors.".format(proxy))
+    logger.info("[F] Proxy {proxy} fail count: {count}/{maxcount}".format(proxy=proxy, count=proxies_failed.count(proxy), maxcount=maxcount))
+    if len(proxies_list) <= 1:
+        if yamlconfig['proxy']['random']:
+            load_proxies_from_file(yamlconfig['proxy']['file'])
+    if proxies_failed.count(proxy) >= maxcount and len(proxies_list) >= 1:
+        logger.info("[F] Removing proxy {0} from proxy list because of too many errors errors.".format(proxy))
         proxies_lock.acquire()
         try:
             proxies_list.remove(proxy)
         except ValueError:
             pass
         proxies_lock.release()
-        logger.info("Proxies left: {0}".format(len(proxies_list)))
+        logger.info("[I] Proxy status: {count} proxies left in memory".format(count=len(proxies_list)))
 
 
 class NoRedirectHandler(urllib2.HTTPRedirectHandler):
@@ -694,75 +706,82 @@ def download_url(url, data=None, cookie=None, loop_client=0, loop_server=0):
     except urllib2.HTTPError, e:
         if yamlconfig['proxy']['use'] and yamlconfig['proxy']['random']:
             failed_proxy(proxy)
-        logger.warning("!!Proxy error on {0}.".format(url))
+        logger.warning("[-] Proxy error {error} on {url}.".format(error=e, url=url))
         if 404 == e.code:
             htmlPage = e.read()
-            logger.warning("404 from proxy received for {url}. Waiting 1 minute".format(url=url))
-            time.sleep(60)
             loop_client += 1
-            logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_client, total=retries_client, url=url))
-            return download_url(url, loop_client=loop_client)
+            logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_client, total=retries_client, url=url))
+            time.sleep(60)
+            return downloadUrl(url, loop_client=loop_client)
         if 500 == e.code:
             htmlPage = e.read()
-            logger.warning("500 from proxy received for {url}. Waiting 1 minute".format(url=url))
-            time.sleep(60)
             loop_server += 1
-            logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
-            return download_url(url, loop_server=loop_server)
+            logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
+            time.sleep(60)
+            return downloadUrl(url, loop_server=loop_server)
         if 504 == e.code:
             htmlPage = e.read()
-            logger.warning("504 from proxy received for {url}. Waiting 1 minute".format(url=url))
-            time.sleep(60)
             loop_server += 1
-            logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
-            return download_url(url, loop_server=loop_server)
+            logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
+            time.sleep(60)
+            return downloadUrl(url, loop_server=loop_server)
         if 502 == e.code:
             htmlPage = e.read()
-            logger.warning("502 from proxy received for {url}. Waiting 1 minute".format(url=url))
-            time.sleep(60)
             loop_server += 1
-            logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
-            return download_url(url, loop_server=loop_server)
+            logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
+            time.sleep(60)
+            return downloadUrl(url, loop_server=loop_server)
         if 403 == e.code:
-            htmlPage = e.read()
-            if 'Please slow down' in htmlPage or 'has temporarily blocked your computer' in htmlPage or 'blocked' in htmlPage:
-                logger.warning("Slow down message received for {url}. Waiting 1 minute".format(url=url))
+            try:
+                htmlPage = e.read()
+            except:
+                htmlPage = ""
+                failedProxy(random_proxy)
+                loop_client += 1
+                logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_client, total=retries_client, url=url))
                 time.sleep(60)
-                return download_url(url)
-        logger.warning("ERROR: HTTP Error ##### {e} ######################## {url}".format(e=e, url=url))
+                return downloadUrl(url, loop_client=loop_client)
+            if 'Please slow down' in htmlPage or 'has temporarily blocked your computer' in htmlPage or 'blocked' in htmlPage:
+                failedProxy(random_proxy)
+                loop_client += 1
+                logger.warning("[T] Slow down message received for {url}. Waiting 1 minute".format(url=url))
+                time.sleep(60)
+                return downloadUrl(url, loop_client=loop_client)
+        logger.warning("[-] ERROR: HTTP Error ##### {e} ######################## {url}".format(e=e, url=url))
         return None, None
     except urllib2.URLError, e:
-        logger.debug("ERROR: URL Error ##### {e} ######################## ".format(e=e, url=url))
+        logger.debug("[-] ERROR: URL Error ##### {e} ######################## ".format(e=e, url=url))
         if proxy:  # remove proxy from the list if needed
             if yamlconfig['proxy']['use'] and yamlconfig['proxy']['random']:
                 failed_proxy(proxy)
-            logger.warning("Failed to download the page because of proxy error {0} trying again.".format(url))
             loop_server += 1
+            logger.warning("Failed to download the page because of proxy error {0} trying again.".format(url))
             logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
             return download_url(url, loop_server=loop_server)
         if 'timed out' in e.reason:
-            logger.warning("Timed out or slow down for {url}. Waiting 1 minute".format(url=url))
-            loop_server += 1
-            logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
+            failedProxy(random_proxy)
+            loop_server += 20
+            logger.warning("[T] Timed out or slow down for {url}. Waiting 1 minute".format(url=url))
+            logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
             time.sleep(60)
             return download_url(url, loop_server=loop_server)
         return None, None
     except socket.timeout:
-        logger.debug("ERROR: timeout ############################# " + url)
+        logger.debug("[-] ERROR: timeout ############################# " + url)
         if proxy:  # remove proxy from the list if needed
             if yamlconfig['proxy']['use'] and yamlconfig['proxy']['random']:
                 failed_proxy(proxy)
-            logger.warning("Failed to download the page because of socket error {0} trying again.".format(url))
-            loop_server += 1
-            logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
+                loop_server += 1
+                logger.warning("[-] Failed to download the page because of socket error {0}. Will try again.".format(url))
+                logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
             return download_url(url, loop_server=loop_server)
         return None, None
     except Exception as e:
         if yamlconfig['proxy']['use'] and yamlconfig['proxy']['random']:
             failed_proxy(proxy)
-        logger.warning("Failed to download the page because of other HTTPlib error proxy error {0} trying again.".format(url))
         loop_server += 1
-        logger.warning("Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
+        logger.warning("[-] Failed to download the page because of other HTTPlib error proxy error {0}. Will try again.".format(url))
+        logger.warning("[R] Retry {nb}/{total} for {url}".format(nb=loop_server, total=retries_server, url=url))
         return download_url(url, loop_server=loop_server)
         #logger.error("ERROR: Other HTTPlib error: {e}".format(e=e))
         #return None, None
