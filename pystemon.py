@@ -110,7 +110,7 @@ class PastieSite(threading.Thread):
                 logger.info("[+] Checking for new pasties from {name}. Next download scheduled in {time} seconds".format(name=self.name, time=sleep_time))
                 # get the list of last pasties, but reverse it so we first have the old
                 # entries and then the new ones
-                last_pasties = self.getLastPasties()
+                last_pasties = self.get_last_pasties()
                 if last_pasties:
                     for pastie in reversed(last_pasties):
                         queues[self.name].put(pastie)  # add pastie to queue
@@ -900,6 +900,10 @@ def parse_config_file(configfile):
             logger.error("Proxy enabled but not set. Set single-proxy or use random with a file")
     if yamlconfig['user-agent']['random']:
         load_user_agents_from_file(yamlconfig['user-agent']['file'])
+    if yamlconfig['syslog']['enable']:
+        slhdlr = logging.handlers.SysLogHandler( facility=logging.handlers.SysLogHandler.LOG_DAEMON )
+        slhdlr.setFormatter( logging.Formatter('pystemon %(message)s') )
+        logger.addHandler(slhdlr)
     if yamlconfig['redis']['queue']:
     	import redis
 
