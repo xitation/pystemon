@@ -290,7 +290,7 @@ class Pastie():
             self.action_on_match()
 
     def action_on_match(self):
-        alert = "[A] Found hit for {matches} in pastie {url}".format(matches=self.matchesToText(), url=self.url)
+        alert = "[A] Found hit for {matches} in pastie {url}".format(matches=self.matches_to_text(), url=self.url)
         logger.info(alert)
         # store info in DB
         if db:
@@ -325,7 +325,7 @@ class Pastie():
 
     def send_email_alert(self):
         msg = MIMEMultipart()
-        alert = "Found {matches} in pastie {url}".format(matches=self.matchesToText(), url=self.url)
+        alert = "Found {matches} in pastie {url}".format(matches=self.matches_to_text(), url=self.url)
         # headers
         msg['Subject'] = yamlconfig['email']['subject'].format(subject=alert)
         msg['From'] = yamlconfig['email']['from']
@@ -348,7 +348,7 @@ Below (after newline) is the content of the pastie:
 
 {content}
 
-        '''.format(site=self.site.name, url=self.url, matches=self.matchesToRegex(), content=self.pastie_content.encode('utf8'))
+        '''.format(site=self.site.name, url=self.url, matches=self.matches_to_regex(), content=self.pastie_content.encode('utf8'))
         msg.attach(MIMEText(message))
         # send out the mail
         try:
